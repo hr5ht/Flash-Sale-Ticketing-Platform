@@ -189,4 +189,4 @@ Routers only handle HTTP. Business rules, authorization checks and transactions 
 ## Not built yet
 
 - A live seat map over WebSockets that broadcasts holds, releases, expiries and bookings
-- Redis caching and rate limiting, payments, a background worker and refresh token rotation. `REFINEMENTS.md` lists them in order.
+- Redis caching and rate limiting, payments, a background worker and refresh token rotation
