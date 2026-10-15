@@ -120,7 +120,7 @@ Interactive docs are served at `/docs` while the app is running.
 
 ## Running locally
 
-Requires Python 3.11+ and PostgreSQL.
+Requires Python 3.11 or newer (the deployment runs 3.12) and PostgreSQL.
 
 ```bash
 createdb flash_sale
@@ -138,6 +138,8 @@ DATABASE_URL=postgresql+asyncpg://<user>@localhost:5432/flash_sale
 TEST_DATABASE_URL=postgresql+asyncpg://<user>@localhost:5432/flash_sale_test
 JWT_SECRET_KEY=<output of: python -c "import secrets; print(secrets.token_urlsafe(48))">
 ```
+
+`TEST_DATABASE_URL` is only needed for the tests and the benchmark. Database URLs can be given in asyncpg form, as above, or as the plain `postgresql://...?sslmode=require` string that hosted providers hand out. The app converts the second form on startup.
 
 Optional settings and their defaults:
 
@@ -158,6 +160,40 @@ pytest
 ```
 
 The tests run against `TEST_DATABASE_URL`. Most of them run inside a transaction that is rolled back afterwards. The concurrency and isolation tests commit for real and truncate the tables afterwards, because two connections cannot see each other's uncommitted rows.
+
+## Deploying to Vercel with Neon
+
+The API runs on Vercel as a single Python function, and the database is Neon serverless Postgres. Vercel finds the app through `[tool.vercel] entrypoint = "src.main:app"` in `pyproject.toml`, so no `vercel.json` is needed.
+
+**1. Create the database.** Create a project in the [Neon console](https://console.neon.tech). Under **Connect**, copy two connection strings:
+
+- the **pooled** string (its host contains `-pooler`), for the running app
+- the **direct** string, for migrations
+
+Use them exactly as Neon gives them. Neon's format, `postgresql://...?sslmode=require&channel_binding=require`, is libpq syntax that asyncpg rejects (`unexpected keyword argument 'sslmode'`), so `src/config.py` rewrites it to `postgresql+asyncpg://...?ssl=require`.
+
+**2. Create the schema.** From your machine, with the direct string:
+
+```bash
+DATABASE_URL="<direct connection string>" alembic upgrade head
+```
+
+The build does not run migrations. Schema changes are applied before the code that needs them is deployed, so a failed migration never leaves a broken deployment live.
+
+**3. Deploy.** In Vercel, choose **Add New → Project** and import this repository. Before the first deploy, add two environment variables:
+
+| variable | value |
+|---|---|
+| `DATABASE_URL` | the pooled Neon connection string |
+| `JWT_SECRET_KEY` | a new secret, generated as above. Never reuse the local one. |
+
+Every push to `main` deploys again. The deployment's root URL redirects to the interactive docs at `/docs`.
+
+**Things that behave differently from local:**
+
+- **Neon scales to zero when idle.** The first request after a pause takes about a second while the database wakes up. The engine uses `pool_pre_ping`, so a connection that died during the pause is replaced instead of failing the request.
+- **Postgres is now a network hop away.** Each query takes longer than against a local database, so response times on the deployment are higher than local ones.
+- **The benchmark numbers above come from local Postgres**, not from this deployment.
 
 ## Layout
 
