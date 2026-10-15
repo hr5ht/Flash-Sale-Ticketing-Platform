@@ -129,7 +129,7 @@ Interactive docs are served at `/docs` while the app is running.
 
 It lists events, draws the seat map, and runs the whole buying flow: select seats, hold them, watch the countdown, confirm or release, then cancel from My bookings. It reflects the backend rather than reimplementing it:
 
-- **Seat status comes from the server.** The seat map is fetched again every 4 seconds, so other buyers' holds and bookings appear without a reload. A WebSocket feed would replace the polling.
+- **Seat status comes from the server.** The seat map is fetched again every 4 seconds, so other buyers' holds and bookings appear without a reload.
 - **Holds and confirms send an `Idempotency-Key`.** The confirm key is generated once per hold, so a retried click returns the original booking instead of failing.
 - **The server enforces the rules.** Selecting more seats than the per-event limit, or seats someone else just took, produces the API's own 409 message.
 - **The demo account resets itself.** Signing in as the demo user cancels its existing bookings first, so the shared account never fills up to the per-event seat limit.
@@ -257,12 +257,7 @@ Routers only handle HTTP. Business rules, authorization checks and transactions 
 
 ## Known limitations
 
-- **Refresh tokens are stateless.** Logging out cannot revoke a token, and a stolen refresh token is valid until it expires. Rotation and revocation are planned.
+- **Refresh tokens are stateless.** Logging out cannot revoke a token, and a stolen refresh token is valid until it expires.
 - **Login timing reveals whether an email exists.** The error response is identical for an unknown email and a wrong password, but the unknown-email path skips Argon2 and returns faster.
-- **Expired claim rows stay until a seat is wanted again.** Correctness is unaffected, since every read checks expiry, but the table grows. A periodic sweeper is planned.
+- **Expired claim rows stay until a seat is wanted again.** Correctness is unaffected, since every read checks expiry, but the table grows.
 - **A seat layout cannot change after the event is created.** Draft metadata can be edited; the sections, rows and seats cannot.
-
-## Not built yet
-
-- A live seat map over WebSockets that broadcasts holds, releases, expiries and bookings
-- Redis caching and rate limiting, payments, a background worker and refresh token rotation
