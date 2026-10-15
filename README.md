@@ -2,7 +2,9 @@
 
 A ticketing backend built for flash sales: hundreds of buyers going after the same few seats at the same moment. The one guarantee that matters is that **a seat is never sold twice**, however many requests arrive at once, and the database enforces that guarantee rather than application code.
 
-FastAPI, async SQLAlchemy 2.0, PostgreSQL 17, Alembic, Pydantic v2.
+FastAPI, async SQLAlchemy 2.0, PostgreSQL, Alembic, Pydantic v2.
+
+**Live:** https://flash-sale-ticketing.vercel.app (opens the interactive API docs)
 
 ## How a seat stays unique
 
@@ -163,12 +165,19 @@ The tests run against `TEST_DATABASE_URL`. Most of them run inside a transaction
 
 ## Deploying to Vercel with Neon
 
-The API runs on Vercel as a single Python function, and the database is Neon serverless Postgres. Vercel finds the app through `[tool.vercel] entrypoint = "src.main:app"` in `pyproject.toml`, so no `vercel.json` is needed.
+Live at **https://flash-sale-ticketing.vercel.app**. The API runs on Vercel as a single Python function in Singapore, and the database is Neon serverless Postgres in the same region.
+
+Two files configure the deployment:
+
+- `vercel.json` sets `"framework": "fastapi"` and `"regions": ["sin1"]`. Without the framework setting, a project created from the CLI gets the "Other" preset. That build finishes in 54 ms, installs no Python, and every URL returns Vercel's own 404. Without the region, the function runs in Washington, D.C. and every query crosses to Singapore and back.
+- `.vercelignore` keeps `.env`, `.env.*`, `.venv`, tests and scripts out of CLI uploads. `vercel deploy` uploads the working directory, not the git commit, so without this file local secrets would be sent along.
+
+`pyproject.toml` points Vercel at the app (`[tool.vercel] entrypoint = "src.main:app"`), pins the tested dependency versions, and declares the project an application rather than a package (`[tool.uv] package = false`), so the build installs dependencies without trying to build the repository as a wheel. `.python-version` selects 3.12, the oldest version Vercel runs.
 
 **1. Create the database.** Create a project in the [Neon console](https://console.neon.tech). Under **Connect**, copy two connection strings:
 
 - the **pooled** string (its host contains `-pooler`), for the running app
-- the **direct** string, for migrations
+- the **direct** string (the same host without `-pooler`), for migrations
 
 Use them exactly as Neon gives them. Neon's format, `postgresql://...?sslmode=require&channel_binding=require`, is libpq syntax that asyncpg rejects (`unexpected keyword argument 'sslmode'`), so `src/config.py` rewrites it to `postgresql+asyncpg://...?ssl=require`.
 
@@ -180,20 +189,26 @@ DATABASE_URL="<direct connection string>" alembic upgrade head
 
 The build does not run migrations. Schema changes are applied before the code that needs them is deployed, so a failed migration never leaves a broken deployment live.
 
-**3. Deploy.** In Vercel, choose **Add New → Project** and import this repository. Before the first deploy, add two environment variables:
+**3. Deploy.** With the [Vercel CLI](https://vercel.com/docs/cli):
 
-| variable | value |
+```bash
+vercel link
+vercel env add DATABASE_URL production      # paste the pooled Neon string
+vercel env add JWT_SECRET_KEY production    # a new secret, never the local one
+vercel deploy --prod
+```
+
+`vercel link` also connects the GitHub repository, so every push to `main` deploys to production after that. The root URL redirects to the interactive docs at `/docs`.
+
+**Measured on the live deployment:**
+
+| request | time |
 |---|---|
-| `DATABASE_URL` | the pooled Neon connection string |
-| `JWT_SECRET_KEY` | a new secret, generated as above. Never reuse the local one. |
+| first request after idle (function cold start, Neon waking from zero) | about 5 s |
+| `/health` while warm, function in Washington, D.C. | 1.9 s |
+| `/health` while warm, function in Singapore next to the database | 0.41 s median |
 
-Every push to `main` deploys again. The deployment's root URL redirects to the interactive docs at `/docs`.
-
-**Things that behave differently from local:**
-
-- **Neon scales to zero when idle.** The first request after a pause takes about a second while the database wakes up. The engine uses `pool_pre_ping`, so a connection that died during the pause is replaced instead of failing the request.
-- **Postgres is now a network hop away.** Each query takes longer than against a local database, so response times on the deployment are higher than local ones.
-- **The benchmark numbers above come from local Postgres**, not from this deployment.
+The engine uses `pool_pre_ping`, so a connection that died while Neon was suspended is replaced instead of failing the request. The benchmark numbers earlier in this README come from local Postgres, not from this deployment.
 
 ## Layout
 
