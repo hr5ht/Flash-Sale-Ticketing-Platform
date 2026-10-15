@@ -10,6 +10,7 @@ from sqlalchemy import (
     literal,
     or_,
     select,
+    update,
 )
 from sqlalchemy.dialects.postgresql import INTERVAL
 from sqlalchemy.exc import DBAPIError, IntegrityError
@@ -305,6 +306,23 @@ async def get_booking(session: AsyncSession, user: User, booking_id: int) -> Boo
     if booking is None or booking.user_id != user.id:
         raise BookingNotFound
     return await to_booking_read(session, booking)
+
+
+async def cancel_booking(session: AsyncSession, user: User, booking_id: int) -> None:
+    booking = await session.scalar(
+        select(Booking).where(Booking.id == booking_id).with_for_update()
+    )
+    if booking is None or booking.user_id != user.id:
+        raise BookingNotFound
+    await session.execute(delete(SeatClaim).where(SeatClaim.hold_id == booking.hold_id))
+    await session.execute(
+        update(Hold).where(Hold.id == booking.hold_id).values(status=HoldStatus.released)
+    )
+    await session.delete(booking)
+    try:
+        await session.commit()
+    except DBAPIError as error:
+        raise translate(error)
 
 
 async def seat_availability(

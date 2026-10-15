@@ -5,6 +5,7 @@ from fastapi import APIRouter, Header, Query, status
 from src.auth.dependencies import CurrentUser
 from src.bookings.schemas import BookingRead, HoldCreate, HoldRead, SalesSummary
 from src.bookings.service import (
+    cancel_booking,
     confirm_hold,
     create_hold,
     get_booking,
@@ -64,6 +65,11 @@ async def booking_detail(
     booking_id: int, user: CurrentUser, session: SessionDep
 ) -> BookingRead:
     return await get_booking(session, user, booking_id)
+
+
+@router.delete("/bookings/{booking_id}", status_code=status.HTTP_204_NO_CONTENT)
+async def cancel(booking_id: int, user: CurrentUser, session: SessionDep) -> None:
+    await cancel_booking(session, user, booking_id)
 
 
 @router.get("/events/{event_id}/sales", response_model=SalesSummary)
