@@ -4,7 +4,7 @@ A ticketing backend built for flash sales: hundreds of buyers going after the sa
 
 FastAPI, async SQLAlchemy 2.0, PostgreSQL, Alembic, Pydantic v2.
 
-**Live:** https://flashsaleticketing.vercel.app. Browse events, sign in with the demo account (`demo@example.com` / `demo-password`) and book seats. The API docs are at [`/docs`](https://flashsaleticketing.vercel.app/docs).
+**Live:** https://flashsaleticketing.vercel.app. Browse events, sign in with the demo account (`demo@example.com` / `demo-password`), book seats and cancel them. Signing in to the demo account through the site cancels its earlier bookings, so every visitor starts from a clean slate. The API docs are at [`/docs`](https://flashsaleticketing.vercel.app/docs).
 
 ## How a seat stays unique
 
@@ -93,6 +93,8 @@ The script defaults to `TEST_DATABASE_URL` and truncates that database before ev
 
 **Idempotency is enforced by the database.** `UNIQUE (user_id, idempotency_key)` on holds and on bookings. If two requests with the same key race, the loser re-reads by key and returns the original result. Repeating a hold with the same key doesn't count against the per-event seat limit a second time.
 
+**Cancelling is a delete, not a status.** `DELETE /bookings/{id}` locks the booking row, deletes its seat claims, marks the hold released and deletes the booking, all in one transaction. A second concurrent cancel waits on the row lock and then finds nothing (404). A production system would keep a cancelled row for refunds and auditing. Here, deleting keeps sales totals correct without a status filter on every query.
+
 **Indexes were chosen from EXPLAIN output, not guessed.** The event listing originally aggregated every price tier to show a minimum price on 20 rows (1.65 ms, 116 buffers). A correlated subquery that runs only for the returned page brought that to 0.06 ms and 64 buffers. A functional index on `lower(city)` was never chosen by the planner, so it was replaced with `(status, lower(city), starts_at)`, which serves both the filter and the sort order.
 
 ## API
@@ -116,6 +118,7 @@ The script defaults to `TEST_DATABASE_URL` and truncates that database before ev
 | POST | `/holds/{id}/confirm` | the holder, before expiry; accepts an `Idempotency-Key` header |
 | GET | `/bookings` | authenticated, paginated |
 | GET | `/bookings/{id}` | the booking's owner |
+| DELETE | `/bookings/{id}` | the booking's owner; frees the seats |
 | GET | `/health` | runs a real query against the database |
 
 Interactive docs are served at `/docs` while the app is running.
@@ -124,11 +127,12 @@ Interactive docs are served at `/docs` while the app is running.
 
 `frontend/` is a small client for the API in plain HTML, CSS and JavaScript, with no framework and no build step. FastAPI serves it with `app.frontend("/", directory=...)`. API routes always take priority over its files, which `tests/test_frontend.py` checks, and on Vercel the files are served from the CDN.
 
-It lists events with city and category filters, draws the seat map, and runs the whole buying flow: select seats, hold them, watch the countdown, then confirm or release. It reflects the backend rather than reimplementing it:
+It lists events, draws the seat map, and runs the whole buying flow: select seats, hold them, watch the countdown, confirm or release, then cancel from My bookings. It reflects the backend rather than reimplementing it:
 
 - **Seat status comes from the server.** The seat map is fetched again every 4 seconds, so other buyers' holds and bookings appear without a reload. A WebSocket feed would replace the polling.
 - **Holds and confirms send an `Idempotency-Key`.** The confirm key is generated once per hold, so a retried click returns the original booking instead of failing.
 - **The server enforces the rules.** Selecting more seats than the per-event limit, or seats someone else just took, produces the API's own 409 message.
+- **The demo account resets itself.** Signing in as the demo user cancels its existing bookings first, so the shared account never fills up to the per-event seat limit.
 - **Every value from the API is escaped** before it reaches `innerHTML`, because event titles and descriptions are written by organizers.
 
 ## Demo data
