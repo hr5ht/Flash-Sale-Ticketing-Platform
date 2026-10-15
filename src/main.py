@@ -2,6 +2,7 @@ from collections.abc import AsyncIterator
 from contextlib import asynccontextmanager
 
 from fastapi import Depends, FastAPI, HTTPException, status
+from fastapi.responses import RedirectResponse
 from pydantic import BaseModel
 from sqlalchemy import text
 from sqlalchemy.exc import SQLAlchemyError
@@ -30,6 +31,11 @@ app.add_exception_handler(AppError, app_error_handler)
 app.include_router(auth_router)
 app.include_router(events_router)
 app.include_router(bookings_router)
+
+
+@app.get("/", include_in_schema=False)
+async def root() -> RedirectResponse:
+    return RedirectResponse("/docs")
 
 
 @app.get("/health", response_model=HealthStatus)

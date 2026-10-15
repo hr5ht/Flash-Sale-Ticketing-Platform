@@ -3,22 +3,22 @@ name = "flash-sale-ticketing"
 version = "0.1.0"
 requires-python = ">=3.11"
 dependencies = [
-    "fastapi",
-    "uvicorn[standard]",
-    "pydantic[email]",
-    "pydantic-settings",
-    "pyjwt",
-    "pwdlib[argon2]",
-    "sqlalchemy[asyncio]",
-    "asyncpg",
-    "alembic",
+    "fastapi==0.141.1",
+    "uvicorn[standard]==0.53.0",
+    "pydantic[email]==2.13.5",
+    "pydantic-settings==2.15.0",
+    "pyjwt==2.14.0",
+    "pwdlib[argon2]==0.3.1",
+    "sqlalchemy[asyncio]==2.0.54",
+    "asyncpg==0.31.0",
+    "alembic==1.20.0",
 ]
 
 [project.optional-dependencies]
 dev = [
-    "pytest",
-    "pytest-asyncio",
-    "httpx",
+    "pytest==9.1.1",
+    "pytest-asyncio==1.4.0",
+    "httpx==0.28.1",
 ]
 
 [tool.pytest.ini_options]
@@ -27,3 +27,9 @@ asyncio_default_fixture_loop_scope = "session"
 asyncio_default_test_loop_scope = "session"
 pythonpath = ["."]
 testpaths = ["tests"]
+
+[tool.uv]
+package = false
+
+[tool.vercel]
+entrypoint = "src.main:app"
