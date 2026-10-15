@@ -37,7 +37,26 @@ const describe = (detail) =>
     ? detail.map((item) => item.msg.replace(/^Value error, /, "")).join(". ")
     : detail;
 
-async function api(path, { method = "GET", body, headers = {} } = {}) {
+async function refreshSession() {
+  const refreshToken = localStorage.getItem("refresh_token");
+  if (!refreshToken) {
+    return false;
+  }
+  const response = await fetch("/auth/refresh", {
+    method: "POST",
+    headers: { "Content-Type": "application/json" },
+    body: JSON.stringify({ refresh_token: refreshToken }),
+  });
+  if (!response.ok) {
+    return false;
+  }
+  state.token = (await response.json()).access_token;
+  localStorage.setItem("token", state.token);
+  return true;
+}
+
+async function api(path, options = {}, retried = false) {
+  const { method = "GET", body, headers = {} } = options;
   const response = await fetch(path, {
     method,
     headers: {
@@ -48,7 +67,11 @@ async function api(path, { method = "GET", body, headers = {} } = {}) {
     body: body && JSON.stringify(body),
   });
   if (response.status === 401 && state.token) {
+    if (!retried && (await refreshSession())) {
+      return api(path, options, true);
+    }
     signOut();
+    toast("Your session ended. Please sign in again.", "info");
   }
   if (response.status === 204) {
     return null;
@@ -94,6 +117,7 @@ async function signIn(email, password) {
   state.token = tokens.access_token;
   state.user = null;
   localStorage.setItem("token", state.token);
+  localStorage.setItem("refresh_token", tokens.refresh_token);
   if (email === DEMO_ACCOUNT.email) {
     await cancelAllBookings();
   }
@@ -114,6 +138,7 @@ function signOut() {
   state.user = null;
   state.holds.clear();
   localStorage.removeItem("token");
+  localStorage.removeItem("refresh_token");
   renderNav();
 }
 
