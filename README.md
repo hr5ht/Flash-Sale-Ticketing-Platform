@@ -55,24 +55,13 @@ The same correctness tests run against all four strategies, and a separate suite
 
 ## Benchmark
 
-`scripts/flash_sale.py` seeds an event, fires every buyer at it concurrently and checks the result for oversells. It runs 500 buyers over 100 seats, 2 seats per buyer, with overlapping baskets so the contention is real. It was measured on an Apple M1 against local Postgres 17 with a pool of 40 connections.
+`scripts/flash_sale.py` seeds an event, fires every buyer at it concurrently and checks the result for oversells. Buyers ask for overlapping seats, so the contention is real. For each strategy and isolation level it reports successful holds, conflicts, retryable errors, oversells, throughput and latency.
 
-```
-strategy       isolation          ok  conflict  retry  oversell   req/s   p50 ms   p95 ms
-unique_insert  READ COMMITTED     45       455      0         0   448.2    704.0   1082.6
-for_update     READ COMMITTED     44       456      0         0   551.7    572.3    890.7
-skip_locked    READ COMMITTED     39       461      0         0   664.8    458.0    727.6
-upsert         READ COMMITTED     41       459      0         0   495.9    602.3    990.1
-upsert         REPEATABLE READ    45       403     52         0   469.1    566.5   1026.7
-upsert         SERIALIZABLE       43        15    442         0   357.3    853.5   1350.5
-skip_locked    SERIALIZABLE       23       438     39         0   504.5    520.1    942.0
-```
-
-**Zero oversells in all 12 strategy and isolation combinations.** What the numbers show:
+**No strategy and isolation combination produced an oversell.** What the comparison shows:
 
 - `skip_locked` has the best throughput and latency because losing buyers fail immediately instead of queueing for a lock. It also sells the fewest seats, because a buyer who would have won if they had waited gives up. That trade between latency and sell-through is the real choice between these strategies.
 - Raising the isolation level adds no safety here, because the primary key already provides it. What it does change is how many requests fail with retryable serialization errors. SERIALIZABLE turns most conflicts into retries.
-- The simulator calls the service layer directly with independent sessions, so the numbers measure database contention, not HTTP overhead. The relative order of the strategies is the meaningful result; the absolute throughput isn't.
+- The simulator calls the service layer directly with independent sessions, so it measures database contention, not HTTP overhead. Results depend on the machine and database it runs against; the relative order of the strategies is the meaningful part.
 
 Reproduce it with:
 
@@ -95,7 +84,7 @@ The script defaults to `TEST_DATABASE_URL` and truncates that database before ev
 
 **Cancelling is a delete, not a status.** `DELETE /bookings/{id}` locks the booking row, deletes its seat claims, marks the hold released and deletes the booking, all in one transaction. A second concurrent cancel waits on the row lock and then finds nothing (404). A production system would keep a cancelled row for refunds and auditing. Here, deleting keeps sales totals correct without a status filter on every query.
 
-**Indexes were chosen from EXPLAIN output, not guessed.** The event listing originally aggregated every price tier to show a minimum price on 20 rows (1.65 ms, 116 buffers). A correlated subquery that runs only for the returned page brought that to 0.06 ms and 64 buffers. A functional index on `lower(city)` was never chosen by the planner, so it was replaced with `(status, lower(city), starts_at)`, which serves both the filter and the sort order.
+**Indexes were chosen from EXPLAIN output, not guessed.** The event listing originally aggregated every price tier of every event to show a minimum price. A correlated subquery that runs only for the returned page does far less work. A functional index on `lower(city)` was never chosen by the planner, so it was replaced with `(status, lower(city), starts_at)`, which serves both the filter and the sort order.
 
 ## API
 
@@ -193,7 +182,7 @@ Live at **https://flashsaleticketing.vercel.app**. The API runs on Vercel as a s
 
 Two files configure the deployment:
 
-- `vercel.json` sets `"framework": "fastapi"` and `"regions": ["sin1"]`. Without the framework setting, a project created from the CLI gets the "Other" preset. That build finishes in 54 ms, installs no Python, and every URL returns Vercel's own 404. Without the region, the function runs in Washington, D.C. and every query crosses to Singapore and back.
+- `vercel.json` sets `"framework": "fastapi"` and `"regions": ["sin1"]`. Without the framework setting, a project created from the CLI gets the "Other" preset. That build installs no Python, and every URL returns Vercel's own 404. Without the region, the function runs in Washington, D.C. and every query crosses to Singapore and back.
 - `.vercelignore` keeps `.env`, `.env.*`, `.venv`, tests and scripts out of CLI uploads. `vercel deploy` uploads the working directory, not the git commit, so without this file local secrets would be sent along.
 
 `pyproject.toml` points Vercel at the app (`[tool.vercel] entrypoint = "src.main:app"`), pins the tested dependency versions, and declares the project an application rather than a package (`[tool.uv] package = false`), so the build installs dependencies without trying to build the repository as a wheel. `.python-version` selects 3.12, the oldest version Vercel runs.
@@ -224,15 +213,7 @@ vercel deploy --prod
 
 `vercel link` also connects the GitHub repository, so every push to `main` deploys to production after that. The root URL serves the frontend, and the API docs are at `/docs`.
 
-**Measured on the live deployment:**
-
-| request | time |
-|---|---|
-| first request after idle (function cold start, Neon waking from zero) | about 5 s |
-| `/health` while warm, function in Washington, D.C. | 1.9 s |
-| `/health` while warm, function in Singapore next to the database | 0.41 s median |
-
-The engine uses `pool_pre_ping`, so a connection that died while Neon was suspended is replaced instead of failing the request. The benchmark numbers earlier in this README come from local Postgres, not from this deployment.
+The engine uses `pool_pre_ping`, so a connection that died while Neon was suspended is replaced instead of failing the request.
 
 ## Layout
 
