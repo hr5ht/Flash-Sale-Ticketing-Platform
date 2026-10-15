@@ -157,7 +157,7 @@ source .venv/bin/activate
 pip install -r requirements.txt
 ```
 
-Create `.env` in the project root:
+Copy `.env.example` to `.env` and fill in `JWT_SECRET_KEY`:
 
 ```
 DATABASE_URL=postgresql+asyncpg://<user>@localhost:5432/flash_sale
