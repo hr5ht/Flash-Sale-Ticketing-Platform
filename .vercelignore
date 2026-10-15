@@ -1,0 +1,12 @@
+.venv
+.env
+.env.*
+.pytest_cache
+__pycache__
+.claude
+CLAUDE.md
+AGENTS.md
+PLAN.md
+REFINEMENTS.md
+tests
+scripts
