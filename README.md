@@ -4,7 +4,7 @@ A ticketing backend built for flash sales: hundreds of buyers going after the sa
 
 FastAPI, async SQLAlchemy 2.0, PostgreSQL, Alembic, Pydantic v2.
 
-**Live:** https://flash-sale-ticketing.vercel.app (opens the interactive API docs)
+**Live:** https://flashsaleticketing.vercel.app (opens the interactive API docs)
 
 ## How a seat stays unique
 
@@ -165,7 +165,7 @@ The tests run against `TEST_DATABASE_URL`. Most of them run inside a transaction
 
 ## Deploying to Vercel with Neon
 
-Live at **https://flash-sale-ticketing.vercel.app**. The API runs on Vercel as a single Python function in Singapore, and the database is Neon serverless Postgres in the same region.
+Live at **https://flashsaleticketing.vercel.app**. The API runs on Vercel as a single Python function in Singapore, and the database is Neon serverless Postgres in the same region.
 
 Two files configure the deployment:
 
