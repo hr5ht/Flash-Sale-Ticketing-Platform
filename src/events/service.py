@@ -188,7 +188,7 @@ async def get_seat_map(session: AsyncSession, event: Event) -> SeatMapRead:
         select(Section.id, Section.name, Seat)
         .join(Section, Section.id == Seat.section_id)
         .where(Seat.event_id == event.id)
-        .order_by(Section.name, Seat.row_label, Seat.seat_number)
+        .order_by(Section.id, Seat.row_label, Seat.seat_number)
     )
 
     sections: dict[int, SeatSectionRead] = {}

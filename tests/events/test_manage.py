@@ -155,9 +155,9 @@ async def test_seatmap_groups_seats_by_section_and_row(
 
     body = response.json()
     assert body["event_id"] == published_event["id"]
-    assert [section["name"] for section in body["sections"]] == ["Balcony", "Orchestra"]
+    assert [section["name"] for section in body["sections"]] == ["Orchestra", "Balcony"]
 
-    orchestra = body["sections"][1]
+    orchestra = body["sections"][0]
     assert [row["label"] for row in orchestra["rows"]] == ["A", "B"]
     assert [seat["number"] for seat in orchestra["rows"][0]["seats"]] == [1, 2, 3]
 
