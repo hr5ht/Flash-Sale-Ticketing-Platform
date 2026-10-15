@@ -4,7 +4,7 @@ A ticketing backend built for flash sales: hundreds of buyers going after the sa
 
 FastAPI, async SQLAlchemy 2.0, PostgreSQL, Alembic, Pydantic v2.
 
-**Live:** https://flashsaleticketing.vercel.app (opens the interactive API docs)
+**Live:** https://flashsaleticketing.vercel.app. Browse events, sign in with the demo account (`demo@example.com` / `demo-password`) and book seats. The API docs are at [`/docs`](https://flashsaleticketing.vercel.app/docs).
 
 ## How a seat stays unique
 
@@ -120,6 +120,26 @@ The script defaults to `TEST_DATABASE_URL` and truncates that database before ev
 
 Interactive docs are served at `/docs` while the app is running.
 
+## Frontend
+
+`frontend/` is a small client for the API in plain HTML, CSS and JavaScript, with no framework and no build step. FastAPI serves it with `app.frontend("/", directory=...)`. API routes always take priority over its files, which `tests/test_frontend.py` checks, and on Vercel the files are served from the CDN.
+
+It lists events with city and category filters, draws the seat map, and runs the whole buying flow: select seats, hold them, watch the countdown, then confirm or release. It reflects the backend rather than reimplementing it:
+
+- **Seat status comes from the server.** The seat map is fetched again every 4 seconds, so other buyers' holds and bookings appear without a reload. A WebSocket feed would replace the polling.
+- **Holds and confirms send an `Idempotency-Key`.** The confirm key is generated once per hold, so a retried click returns the original booking instead of failing.
+- **The server enforces the rules.** Selecting more seats than the per-event limit, or seats someone else just took, produces the API's own 409 message.
+- **Every value from the API is escaped** before it reaches `innerHTML`, because event titles and descriptions are written by organizers.
+
+## Demo data
+
+`scripts/seed_demo.py` creates five fictional events through the public API, books part of each event's seats from a set of seed buyers so the seat maps look lived-in, and creates the demo account. One event's sale opens in the future, which shows the "sale not open yet" state. Running the script again skips events that already exist.
+
+```bash
+SEED_PASSWORD=<password for the organizer and seed buyers> \
+  python scripts/seed_demo.py --base-url http://127.0.0.1:8000
+```
+
 ## Running locally
 
 Requires Python 3.11 or newer (the deployment runs 3.12) and PostgreSQL.
@@ -198,7 +218,7 @@ vercel env add JWT_SECRET_KEY production    # a new secret, never the local one
 vercel deploy --prod
 ```
 
-`vercel link` also connects the GitHub repository, so every push to `main` deploys to production after that. The root URL redirects to the interactive docs at `/docs`.
+`vercel link` also connects the GitHub repository, so every push to `main` deploys to production after that. The root URL serves the frontend, and the API docs are at `/docs`.
 
 **Measured on the live deployment:**
 
@@ -224,7 +244,8 @@ src/
   exceptions.py  domain errors mapped to HTTP status codes in one place
   pagination.py
 alembic/       migrations
-scripts/       flash_sale.py benchmark
+frontend/      HTML, CSS and JavaScript client, served by FastAPI
+scripts/       flash_sale.py benchmark, seed_demo.py demo data
 tests/
 ```
 
