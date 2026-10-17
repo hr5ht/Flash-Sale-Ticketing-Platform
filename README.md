@@ -1,244 +1,65 @@
-# Flash-Sale Ticketing Backend
+# Flash-Sale Ticketing
 
-A ticketing backend built for flash sales: hundreds of buyers going after the same few seats at the same moment. The one guarantee that matters is that **a seat is never sold twice**, however many requests arrive at once, and the database enforces that guarantee rather than application code.
+Backend for selling event tickets when a lot of people try to buy the same seats at the same time. The main rule is that a seat can never be sold twice.
 
-FastAPI, async SQLAlchemy 2.0, PostgreSQL, Alembic, Pydantic v2.
+FastAPI, PostgreSQL, SQLAlchemy (async), Alembic.
 
-**Live:** https://flashsaleticketing.vercel.app. Browse events, sign in with the demo account (`demo@example.com` / `demo-password`), book seats and cancel them. Signing in to the demo account through the site cancels its earlier bookings, so every visitor starts from a clean slate. The API docs are at [`/docs`](https://flashsaleticketing.vercel.app/docs).
+Live: https://flashsaleticketing.vercel.app (demo login `demo@example.com` / `demo-password`). API docs are at `/docs`.
 
-## How a seat stays unique
+## How it works
 
-Seat ownership lives in a single table:
-
-```sql
-seat_claims (seat_id BIGINT PRIMARY KEY, hold_id BIGINT)
-```
-
-That primary key is the guarantee. A claim belongs to a hold, and the hold's state decides what the claim means:
-
-| hold status | expiry | the seat is |
-|---|---|---|
-| `active` | in the future | held |
-| `active` | in the past | available again |
-| `confirmed` | ignored | booked, permanently |
-| `released` | ignored | available (the claim row is deleted on release) |
-
-This gives three properties without any application-level locking:
-
-- **All-or-nothing holds.** Every seat in a request goes in as one multi-row insert inside a savepoint. If one seat conflicts, the whole statement fails and nothing is held.
-- **Expiry with no background job.** Expiry is evaluated against `now()` in Postgres every time availability is read or a seat is acquired. An expired hold counts as available everywhere the moment it expires. The application clock is never consulted.
-- **Booked seats stay booked.** Confirming a hold keeps its claim rows and marks the hold `confirmed`, and expiry only ever reclaims `active` holds.
-
-Bypassing the API doesn't get around this either:
-
-```
-INSERT INTO seat_claims (seat_id, hold_id) VALUES (1, 2);
-ERROR:  duplicate key value violates unique constraint "seat_claims_pkey"
-```
-
-Seats also carry a denormalized `event_id`, which keeps the hot seat queries on a single table. Composite foreign keys, `seats(section_id, event_id) → sections(id, event_id)` and the same for price tiers, make it impossible for a seat to point at a section or tier from a different event. The denormalized column cannot drift.
-
-## Seat acquisition strategies
-
-Four interchangeable strategies are selected by `SEAT_ACQUISITION_STRATEGY` (see `src/bookings/acquisition.py`):
-
-| strategy | mechanism |
-|---|---|
-| `unique_insert` | delete expired claims for the requested seats, insert, rely on the primary key violation |
-| `for_update` | lock the seat rows with `SELECT ... ORDER BY id FOR UPDATE`, check live claims, insert |
-| `skip_locked` | the same with `SKIP LOCKED`: give up at once instead of waiting behind another buyer |
-| `upsert` (default) | one `INSERT ... ON CONFLICT (seat_id) DO UPDATE ... WHERE <existing claim is dead> RETURNING` |
-
-`upsert` takes free seats, takes over expired claims and skips live claims in one statement, with no read-then-write window. The lock-based strategies sort seat ids before locking, so two buyers with overlapping baskets cannot deadlock.
-
-The same correctness tests run against all four strategies, and a separate suite runs the default strategy at READ COMMITTED, REPEATABLE READ and SERIALIZABLE. The benchmark below covers every combination.
-
-## Benchmark
-
-`scripts/flash_sale.py` seeds an event, fires every buyer at it concurrently and checks the result for oversells. Buyers ask for overlapping seats, so the contention is real. For each strategy and isolation level it reports successful holds, conflicts, retryable errors, oversells, throughput and latency.
-
-**No strategy and isolation combination produced an oversell.** What the comparison shows:
-
-- `skip_locked` has the best throughput and latency because losing buyers fail immediately instead of queueing for a lock. It also sells the fewest seats, because a buyer who would have won if they had waited gives up. That trade between latency and sell-through is the real choice between these strategies.
-- Raising the isolation level adds no safety here, because the primary key already provides it. What it does change is how many requests fail with retryable serialization errors. SERIALIZABLE turns most conflicts into retries.
-- The simulator calls the service layer directly with independent sessions, so it measures database contention, not HTTP overhead. Results depend on the machine and database it runs against; the relative order of the strategies is the meaningful part.
-
-Reproduce it with:
-
-```bash
-python scripts/flash_sale.py --buyers 500 --seats 100 --strategy all --isolation all
-python scripts/flash_sale.py --explain     # EXPLAIN (ANALYZE, BUFFERS) on the hot queries
-```
-
-The script defaults to `TEST_DATABASE_URL` and truncates that database before every run.
-
-## Things worth knowing
-
-**Serialization failures are not "seat taken".** Under SERIALIZABLE, buyers holding *disjoint* seats were rejected through predicate-lock conflicts. Reporting those as `409 seat unavailable` would tell buyers their seats were gone when they weren't. Those errors (SQLSTATE `40001` and `40P01`) return `503` and can be retried.
-
-**Commits happen inside the service, not in dependency teardown.** SERIALIZABLE can defer a conflict to `COMMIT`. When the commit ran in the FastAPI dependency's teardown, the response had already started, so the client got a dropped connection and the server logged a `RuntimeError`. Write paths now commit inside the request, where a failure can still become a proper status code.
-
-**Services never roll back the caller's transaction.** Recoverable conflicts are handled with `session.begin_nested()` savepoints, so a failed hold attempt unwinds its own work and nothing else.
-
-**Idempotency is enforced by the database.** `UNIQUE (user_id, idempotency_key)` on holds and on bookings. If two requests with the same key race, the loser re-reads by key and returns the original result. Repeating a hold with the same key doesn't count against the per-event seat limit a second time.
-
-**Cancelling is a delete, not a status.** `DELETE /bookings/{id}` locks the booking row, deletes its seat claims, marks the hold released and deletes the booking, all in one transaction. A second concurrent cancel waits on the row lock and then finds nothing (404). A production system would keep a cancelled row for refunds and auditing. Here, deleting keeps sales totals correct without a status filter on every query.
-
-**Indexes were chosen from EXPLAIN output, not guessed.** The event listing originally aggregated every price tier of every event to show a minimum price. A correlated subquery that runs only for the returned page does far less work. A functional index on `lower(city)` was never chosen by the planner, so it was replaced with `(status, lower(city), starts_at)`, which serves both the filter and the sort order.
-
-## API
-
-| method | path | who |
-|---|---|---|
-| POST | `/auth/register` | anyone (role `attendee` or `organizer`) |
-| POST | `/auth/login` | anyone |
-| POST | `/auth/refresh` | holder of a refresh token |
-| GET | `/auth/me` | authenticated |
-| POST | `/events` | organizer |
-| GET | `/events` | anyone; published only, paginated, filter by `city`, `category`, `starts_after`, `starts_before` |
-| GET | `/events/mine` | organizer, including drafts |
-| GET | `/events/{id}` | anyone if published, otherwise the owner or an admin |
-| PATCH | `/events/{id}` | owner or admin, drafts only |
-| POST | `/events/{id}/publish` | owner or admin |
-| GET | `/events/{id}/seatmap` | each seat as `available`, `held` or `booked` |
-| GET | `/events/{id}/sales` | owner or admin |
-| POST | `/events/{id}/holds` | authenticated; accepts an `Idempotency-Key` header |
-| DELETE | `/holds/{id}` | the holder |
-| POST | `/holds/{id}/confirm` | the holder, before expiry; accepts an `Idempotency-Key` header |
-| GET | `/bookings` | authenticated, paginated |
-| GET | `/bookings/{id}` | the booking's owner |
-| DELETE | `/bookings/{id}` | the booking's owner; frees the seats |
-| GET | `/health` | runs a real query against the database |
-
-Interactive docs are served at `/docs` while the app is running.
-
-## Frontend
-
-`frontend/` is a small client for the API in plain HTML, CSS and JavaScript, with no framework and no build step. FastAPI serves it with `app.frontend("/", directory=...)`. API routes always take priority over its files, which `tests/test_frontend.py` checks, and on Vercel the files are served from the CDN.
-
-It lists events, draws the seat map, and runs the whole buying flow: select seats, hold them, watch the countdown, confirm or release, then cancel from My bookings. It reflects the backend rather than reimplementing it:
-
-- **Seat status comes from the server.** The seat map is fetched again every 4 seconds, so other buyers' holds and bookings appear without a reload.
-- **Holds and confirms send an `Idempotency-Key`.** The confirm key is generated once per hold, so a retried click returns the original booking instead of failing.
-- **The server enforces the rules.** Selecting more seats than the per-event limit, or seats someone else just took, produces the API's own 409 message.
-- **The demo account resets itself.** Signing in as the demo user cancels its existing bookings first, so the shared account never fills up to the per-event seat limit.
-- **Every value from the API is escaped** before it reaches `innerHTML`, because event titles and descriptions are written by organizers.
-
-## Demo data
-
-`scripts/seed_demo.py` creates five fictional events through the public API, books part of each event's seats from a set of seed buyers so the seat maps look lived-in, and creates the demo account. One event's sale opens in the future, which shows the "sale not open yet" state. Running the script again skips events that already exist.
-
-```bash
-SEED_PASSWORD=<password for the organizer and seed buyers> \
-  python scripts/seed_demo.py --base-url http://127.0.0.1:8000
-```
+- Each held or booked seat is a row in `seat_claims`, and `seat_id` is the primary key, so Postgres rejects a second claim on the same seat.
+- A hold is all-or-nothing: all seats are inserted together inside a savepoint, so if one is taken none are held.
+- Holds expire after 5 minutes. Expiry is checked against the database clock whenever seats are read or claimed, so there is no background job.
+- Holding and confirming accept an `Idempotency-Key` header, so a retried request returns the first result.
+- There are four ways of claiming seats (`unique_insert`, `for_update`, `skip_locked`, `upsert`), picked with `SEAT_ACQUISITION_STRATEGY`. `scripts/flash_sale.py` runs many buyers against each one and checks for oversells.
 
 ## Running locally
 
-Requires Python 3.11 or newer (the deployment runs 3.12) and PostgreSQL.
+Needs Python 3.11+ and PostgreSQL.
 
 ```bash
 createdb flash_sale
 createdb flash_sale_test
-
 python3 -m venv .venv
 source .venv/bin/activate
 pip install -r requirements.txt
-```
-
-Copy `.env.example` to `.env` and fill in `JWT_SECRET_KEY`:
-
-```
-DATABASE_URL=postgresql+asyncpg://<user>@localhost:5432/flash_sale
-TEST_DATABASE_URL=postgresql+asyncpg://<user>@localhost:5432/flash_sale_test
-JWT_SECRET_KEY=<output of: python -c "import secrets; print(secrets.token_urlsafe(48))">
-```
-
-`TEST_DATABASE_URL` is only needed for the tests and the benchmark. Database URLs can be given in asyncpg form, as above, or as the plain `postgresql://...?sslmode=require` string that hosted providers hand out. The app converts the second form on startup.
-
-Optional settings and their defaults:
-
-| variable | default |
-|---|---|
-| `ACCESS_TOKEN_EXPIRE_MINUTES` | 15 |
-| `REFRESH_TOKEN_EXPIRE_DAYS` | 7 |
-| `HOLD_DURATION_SECONDS` | 300 |
-| `MAX_SEATS_PER_USER_PER_EVENT` | 6 |
-| `SEAT_ACQUISITION_STRATEGY` | `upsert` |
-
-Then:
-
-```bash
+cp .env.example .env    # then set JWT_SECRET_KEY
 alembic upgrade head
 uvicorn src.main:app --reload
+```
+
+To add some demo events:
+
+```bash
+SEED_PASSWORD=<any password> python scripts/seed_demo.py
+```
+
+## Tests
+
+```bash
 pytest
 ```
 
-The tests run against `TEST_DATABASE_URL`. Most of them run inside a transaction that is rolled back afterwards. The concurrency and isolation tests commit for real and truncate the tables afterwards, because two connections cannot see each other's uncommitted rows.
+The tests use `TEST_DATABASE_URL`.
 
-## Deploying to Vercel with Neon
+## Deployment
 
-Live at **https://flashsaleticketing.vercel.app**. The API runs on Vercel as a single Python function in Singapore, and the database is Neon serverless Postgres in the same region.
+Runs on Vercel with a Neon Postgres database. Migrations are run by hand with Neon's direct (non-pooled) connection string before deploying.
 
-Two files configure the deployment:
-
-- `vercel.json` sets `"framework": "fastapi"` and `"regions": ["sin1"]`. Without the framework setting, a project created from the CLI gets the "Other" preset. That build installs no Python, and every URL returns Vercel's own 404. Without the region, the function runs in Washington, D.C. and every query crosses to Singapore and back.
-- `.vercelignore` keeps `.env`, `.env.*`, `.venv`, tests and scripts out of CLI uploads. `vercel deploy` uploads the working directory, not the git commit, so without this file local secrets would be sent along.
-
-`pyproject.toml` points Vercel at the app (`[tool.vercel] entrypoint = "src.main:app"`), pins the tested dependency versions, and declares the project an application rather than a package (`[tool.uv] package = false`), so the build installs dependencies without trying to build the repository as a wheel. `.python-version` selects 3.12, the oldest version Vercel runs.
-
-**1. Create the database.** Create a project in the [Neon console](https://console.neon.tech). Under **Connect**, copy two connection strings:
-
-- the **pooled** string (its host contains `-pooler`), for the running app
-- the **direct** string (the same host without `-pooler`), for migrations
-
-Use them exactly as Neon gives them. Neon's format, `postgresql://...?sslmode=require&channel_binding=require`, is libpq syntax that asyncpg rejects (`unexpected keyword argument 'sslmode'`), so `src/config.py` rewrites it to `postgresql+asyncpg://...?ssl=require`.
-
-**2. Create the schema.** From your machine, with the direct string:
-
-```bash
-DATABASE_URL="<direct connection string>" alembic upgrade head
-```
-
-The build does not run migrations. Schema changes are applied before the code that needs them is deployed, so a failed migration never leaves a broken deployment live.
-
-**3. Deploy.** With the [Vercel CLI](https://vercel.com/docs/cli):
-
-```bash
-vercel link
-vercel env add DATABASE_URL production      # paste the pooled Neon string
-vercel env add JWT_SECRET_KEY production    # a new secret, never the local one
-vercel deploy --prod
-```
-
-`vercel link` also connects the GitHub repository, so every push to `main` deploys to production after that. The root URL serves the frontend, and the API docs are at `/docs`.
-
-The engine uses `pool_pre_ping`, so a connection that died while Neon was suspended is replaced instead of failing the request.
-
-## Layout
-
-The code is organised by domain, not by layer. Each domain owns its router, schemas, models, service and exceptions.
+## Project structure
 
 ```
 src/
-  auth/        users, roles, argon2 hashing, access and refresh tokens
-  events/      events, price tiers, sections, seats, listing, seat map
-  bookings/    holds, seat claims, bookings, acquisition strategies, sales
+  auth/        users, roles, password hashing, tokens
+  events/      events, sections, seats, listing, seat map
+  bookings/    holds, bookings, seat claiming, sales
   config.py    settings from environment variables
-  database.py  engine, session, transaction boundary
-  exceptions.py  domain errors mapped to HTTP status codes in one place
+  database.py  engine and sessions
+  exceptions.py
   pagination.py
 alembic/       migrations
-frontend/      HTML, CSS and JavaScript client, served by FastAPI
-scripts/       flash_sale.py benchmark, seed_demo.py demo data
+frontend/      small HTML/JS client
+scripts/       benchmark and demo data
 tests/
 ```
-
-Routers only handle HTTP. Business rules, authorization checks and transactions live in the services.
-
-## Known limitations
-
-- **Refresh tokens are stateless.** Logging out cannot revoke a token, and a stolen refresh token is valid until it expires.
-- **Login timing reveals whether an email exists.** The error response is identical for an unknown email and a wrong password, but the unknown-email path skips Argon2 and returns faster.
-- **Expired claim rows stay until a seat is wanted again.** Correctness is unaffected, since every read checks expiry, but the table grows.
-- **A seat layout cannot change after the event is created.** Draft metadata can be edited; the sections, rows and seats cannot.
