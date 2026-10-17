@@ -40,6 +40,7 @@ from src.config import get_settings
 from src.events.models import Event, EventStatus, PriceTier, Seat
 from src.exceptions import translate
 from src.pagination import Page, PageParams
+from src.seatmap.connections import send_seat_update
 
 
 def hold_expiry_expression() -> ColumnElement[datetime]:
@@ -193,6 +194,7 @@ async def create_hold(
         raise translate(error)
 
     await session.refresh(hold)
+    await send_seat_update(event.id, requested, SeatAvailability.held)
     return await to_hold_read(session, hold)
 
 
@@ -209,12 +211,14 @@ async def release_hold(session: AsyncSession, user: User, hold_id: int) -> None:
     hold = await load_owned_hold(session, user, hold_id)
     if hold.status is not HoldStatus.active:
         raise HoldNotActive
+    seat_ids = await seat_ids_for_hold(session, hold.id)
     await session.execute(delete(SeatClaim).where(SeatClaim.hold_id == hold.id))
     hold.status = HoldStatus.released
     try:
         await session.commit()
     except DBAPIError as error:
         raise translate(error)
+    await send_seat_update(hold.event_id, seat_ids, SeatAvailability.available)
 
 
 async def confirm_hold(
@@ -268,7 +272,11 @@ async def confirm_hold(
         raise translate(error)
 
     await session.refresh(booking)
-    return await to_booking_read(session, booking)
+    confirmed = await to_booking_read(session, booking)
+    await send_seat_update(
+        booking.event_id, confirmed.seat_ids, SeatAvailability.booked
+    )
+    return confirmed
 
 
 async def list_bookings(
@@ -314,6 +322,7 @@ async def cancel_booking(session: AsyncSession, user: User, booking_id: int) -> 
     )
     if booking is None or booking.user_id != user.id:
         raise BookingNotFound
+    seat_ids = await seat_ids_for_hold(session, booking.hold_id)
     await session.execute(delete(SeatClaim).where(SeatClaim.hold_id == booking.hold_id))
     await session.execute(
         update(Hold).where(Hold.id == booking.hold_id).values(status=HoldStatus.released)
@@ -323,6 +332,7 @@ async def cancel_booking(session: AsyncSession, user: User, booking_id: int) -> 
         await session.commit()
     except DBAPIError as error:
         raise translate(error)
+    await send_seat_update(booking.event_id, seat_ids, SeatAvailability.available)
 
 
 async def seat_availability(

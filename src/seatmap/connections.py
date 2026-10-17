@@ -1,3 +1,6 @@
+import asyncio
+from collections.abc import Sequence
+
 from fastapi import WebSocket
 
 connections: dict[int, set[WebSocket]] = {}
@@ -14,3 +17,15 @@ def remove(event_id: int, websocket: WebSocket) -> None:
     sockets.discard(websocket)
     if not sockets:
         del connections[event_id]
+
+
+async def send_seat_update(event_id: int, seat_ids: Sequence[int], status: str) -> None:
+    sockets = list(connections.get(event_id, ()))
+    message = {"status": status, "seat_ids": list(seat_ids)}
+    results = await asyncio.gather(
+        *(websocket.send_json(message) for websocket in sockets),
+        return_exceptions=True,
+    )
+    for websocket, result in zip(sockets, results):
+        if isinstance(result, Exception):
+            remove(event_id, websocket)
