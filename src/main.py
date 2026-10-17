@@ -13,6 +13,7 @@ from src.bookings.router import router as bookings_router
 from src.events.router import router as events_router
 from src.database import engine, get_session
 from src.exceptions import AppError, app_error_handler
+from src.seatmap.router import router as seatmap_router
 
 
 class HealthStatus(BaseModel):
@@ -31,6 +32,7 @@ app.add_exception_handler(AppError, app_error_handler)
 app.include_router(auth_router)
 app.include_router(events_router)
 app.include_router(bookings_router)
+app.include_router(seatmap_router)
 app.frontend("/", directory=Path(__file__).resolve().parent.parent / "frontend")
 
 
