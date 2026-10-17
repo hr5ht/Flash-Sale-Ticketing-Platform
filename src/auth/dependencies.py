@@ -6,7 +6,7 @@ from sqlalchemy.ext.asyncio import AsyncSession
 
 from src.auth.exceptions import InsufficientRole, InvalidToken
 from src.auth.models import Role, User
-from src.auth.security import decode_token
+from src.auth.service import user_from_access_token
 from src.database import get_session
 
 bearer_scheme = HTTPBearer(auto_error=False)
@@ -20,11 +20,7 @@ async def get_current_user(
 ) -> User:
     if credentials is None:
         raise InvalidToken
-    user_id = decode_token(credentials.credentials, "access")
-    user = await session.get(User, user_id)
-    if user is None:
-        raise InvalidToken
-    return user
+    return await user_from_access_token(session, credentials.credentials)
 
 
 CurrentUser = Annotated[User, Depends(get_current_user)]

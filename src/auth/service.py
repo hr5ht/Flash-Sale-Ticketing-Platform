@@ -55,6 +55,13 @@ def issue_token_pair(user: User) -> TokenPair:
     )
 
 
+async def user_from_access_token(session: AsyncSession, token: str) -> User:
+    user = await session.get(User, decode_token(token, "access"))
+    if user is None:
+        raise InvalidToken
+    return user
+
+
 async def refresh_access_token(session: AsyncSession, refresh_token: str) -> AccessToken:
     user_id = decode_token(refresh_token, "refresh")
     user = await session.get(User, user_id)
